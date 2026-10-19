@@ -54,14 +54,14 @@ while (true)
                 using var db = new TranscolarDB("Transcolar");
                 db.Requisicoes.Where(r => r.Requisicao == requisicao.Requisicao && r.Versao == requisicao.Versao)
                     .Set(r => r.Situacao, (short)5)
-                    .Set(r => r.DescricaoError, e.Message)
+                    .Set(r => r.DescricaoError, e.ToString())
                     .Update();
             }
             catch
             {
-                Log.WriteLine($"Erro ao atualizar a requisicao {requisicao.Requisicao}: {e.Message}");
+                Log.WriteLine($"Erro ao atualizar a requisicao {requisicao.Requisicao}: {e}");
             }
-            Log.WriteLine($"Erro ao processar requisicao {requisicao.Requisicao}: {e.Message}");
+            Log.WriteLine($"Erro ao processar requisicao {requisicao.Requisicao}: {e}");
         }
     }
 
@@ -639,12 +639,24 @@ static Veiculos EncontraVeiculo(List<Veiculos> veiculos, Requisicoes req, Viagen
 {
     var novaViagem = (intervalo, viagem.Paradas.First().Vertice, viagem.Paradas.Last().Vertice, viagem);
 
+    float ChaveProximidadeInicio(Veiculos v) =>
+        v.Intervalos.Count == 0
+            ? 0f
+            : req.Distancias[viagem.Paradas.Last().Vertice, v.Intervalos.First().verticeIni, viagem.TipoVeiculo];
+
+    float ChaveProximidadeFim(Veiculos v) =>
+        v.Intervalos.Count == 0
+            ? 0f
+            : req.Distancias[v.Intervalos.Last().verticeFim, viagem.Paradas.First().Vertice, viagem.TipoVeiculo];
+
     var veiculo = veiculos.Where(v => !(v.Intervalos.Any(i => i.intervalo & intervalo)))
         .Where(v => ValidaConexoes(v, novaViagem, req))
-        .Where(v => (v.TipoVeiculo == viagem.TipoVeiculo || v.TipoVeiculo == viagem.TipoVeiculo + 1) && v.VeiculoEspecial == viagem.VeiculoEspecial)
+        .Where(v => (v.TipoVeiculo == viagem.TipoVeiculo || v.TipoVeiculo == viagem.TipoVeiculo + 1)
+                    && v.VeiculoEspecial == viagem.VeiculoEspecial)
         .OrderBy(v => v.TipoVeiculo - viagem.TipoVeiculo)
-        .ThenBy(v => (int)req.Distancias[viagem.Paradas.Last().Vertice, v.Intervalos.First().verticeIni, viagem.TipoVeiculo] / 10)
-        .ThenBy(v => req.Distancias[v.Intervalos.Last().verticeFim, viagem.Paradas.First().Vertice, viagem.TipoVeiculo])
+        .ThenBy(v => v.Intervalos.Count == 0 ? 0 : 1) // idle (esvaziado) primeiro
+        .ThenBy(v => (int)ChaveProximidadeInicio(v) / 10)
+        .ThenBy(v => ChaveProximidadeFim(v))
         .FirstOrDefault(v => viagem.TrafegaViagem(v.TipoVeiculo, req.Distancias));
 
     if (veiculo == null)

@@ -639,6 +639,8 @@ namespace Otimizacao
 
         public bool CriaAproveitamento(Requisicoes req)
         {
+            if (Intervalos == null || Intervalos.Count == 0) return false;
+
             Intervalos.Sort((a, b) => a.intervalo.Inicio.CompareTo(b.intervalo.Inicio));
             (IntervaloTempo intervalo, int verticeIni, int verticeFim, Viagens viagem) v1, v2;
             int numViagem;
