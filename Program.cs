@@ -785,6 +785,3 @@ static bool MoverAluno(Requisicoes req, Alunos aluno, Viagens viagem)
 
     return movido;
 }
-
-
-</cursor_untrusted_data_1337>
