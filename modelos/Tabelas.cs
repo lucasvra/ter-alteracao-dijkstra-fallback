@@ -480,6 +480,24 @@ namespace Otimizacao
             return !float.IsInfinity(distancias[Paradas.Select(p => p.Vertice), veiculo]);
         }
 
+        /// <summary>
+        /// Renumera Sequencial e SequencialVertices na ORDEM ATUAL da lista (= ordem do caminho
+        /// validada por TrafegaViagem). Paradas criadas por InserirAluno/MoverAluno nascem com
+        /// Sequencial=0; sem renumerar, qualquer OrderBy(Sequencial) as levaria para o início.
+        /// </summary>
+        public void RenumeraParadas()
+        {
+            short sequencialVertice = 0;
+            for (var i = 0; i < Paradas.Count; i++)
+            {
+                if (i == 0 || Paradas[i - 1].Vertice != Paradas[i].Vertice)
+                    sequencialVertice++;
+
+                Paradas[i].Sequencial = (short)(i + 1);
+                Paradas[i].SequencialVertices = sequencialVertice;
+            }
+        }
+
         public void AtualizaPosProcessamento(int veiculo, Matriz distancias)
         {
             if (veiculo == TipoVeiculo) return;

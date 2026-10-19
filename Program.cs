@@ -148,8 +148,21 @@ static void Otimizar(Requisicoes req)
         Log.WriteLine($"\tVeiculo {veiculo.Placa} tipo {veiculo.TipoVeiculo} usado em {veiculo.Intervalos.Count} viagens");
     }
 
+    // Timeout opcional (segundos) só para TER_PreencheOtimizacao. Sem a variável (ou <= 0)
+    // mantém o comportamento atual (Command Timeout=0 da connection string = sem limite).
+    // Se o timeout estourar, o Npgsql cancela o comando, o Postgres faz rollback da função
+    // e a exceção cai no catch do loop principal (situacao 5 + descricao_error).
+    var timeoutPreenche = int.TryParse(Environment.GetEnvironmentVariable("TER_PREENCHE_TIMEOUT_SEC"), out var timeoutEnv) && timeoutEnv > 0 ? timeoutEnv : 0;
+    if (timeoutPreenche > 0) db.CommandTimeout = timeoutPreenche;
+
+    var viagensPreencher = db.Viagens.Count(v => v.Requisicao == req.Requisicao && v.Versao == versao);
+    Log.WriteLine($"Iniciando TER_PreencheOtimizacao({req.Requisicao}, {versao}) para {viagensPreencher} viagens " +
+                  $"(timeout: {(timeoutPreenche > 0 ? timeoutPreenche + " s" : "sem limite")})");
+    var cronometro = System.Diagnostics.Stopwatch.StartNew();
     var preenchimentoConcluido = db.Execute<bool>(
         $"SELECT requisicao.TER_PreencheOtimizacao({req.Requisicao}, {versao});");
+    cronometro.Stop();
+    Log.WriteLine($"TER_PreencheOtimizacao({req.Requisicao}, {versao}) retornou {preenchimentoConcluido} em {cronometro.Elapsed:hh\\:mm\\:ss}");
     if (!preenchimentoConcluido)
         throw new InvalidOperationException(
             $"TER_PreencheOtimizacao retornou falha para a requisicao {req.Requisicao}, versao {versao}.");
@@ -396,7 +409,10 @@ static void AtualizaViagensReaproveitadas(List<Viagens> viagens, List<Alunos> al
 
     foreach (var viagem in viagens)
     {
-        viagem.Paradas = viagem.Paradas.OrderBy(p => p.Sequencial).ToList();
+        // NÃO reordenar por Sequencial: InserirAluno/MoverAluno inserem paradas novas com
+        // Sequencial=0 na posição correta da lista; OrderBy(Sequencial) as jogava para o início
+        // da viagem (idas e voltas, volta começando fora da escola). A ordem da lista em memória
+        // é a usada por TrafegaViagem e pela checagem de tempo, e é a ordem que deve ser gravada.
         var alunosViagem = viagem.Paradas
             .Where(p => p.Tipo == 1 && alunosPorSeq.ContainsKey(p.Codigo))
             .Select(p => alunosPorSeq[p.Codigo])
@@ -409,15 +425,7 @@ static void AtualizaViagensReaproveitadas(List<Viagens> viagens, List<Alunos> al
         viagem.Monitor = alunosViagem.Any(a => a.TipoEnsino is 1 or 2);
         viagem.VeiculoEspecial = alunosViagem.Any(a => a.VeiculoEspecial);
 
-        short sequencialVertice = 0;
-        for (var i = 0; i < viagem.Paradas.Count; i++)
-        {
-            if (i == 0 || viagem.Paradas[i - 1].Vertice != viagem.Paradas[i].Vertice)
-                sequencialVertice++;
-
-            viagem.Paradas[i].Sequencial = (short)(i + 1);
-            viagem.Paradas[i].SequencialVertices = sequencialVertice;
-        }
+        viagem.RenumeraParadas();
 
         var duracaoMinutos = 0d;
         if (viagem.Sentido == 1)
@@ -737,6 +745,7 @@ static bool InserirAluno(Requisicoes req, Alunos aluno, Viagens viagem)
 
         if (viagem.TrafegaViagem(viagem.TipoVeiculo, req.Distancias))
         {
+            viagem.RenumeraParadas();
             viagem.AtualizaPosProcessamento(viagem.TipoVeiculo, req.Distancias);
             inserido = true;
         }
@@ -788,6 +797,7 @@ static bool MoverAluno(Requisicoes req, Alunos aluno, Viagens viagem)
 
         if (viagem.TrafegaViagem(viagem.TipoVeiculo, req.Distancias))
         {
+            viagem.RenumeraParadas();
             viagem.AtualizaPosProcessamento(viagem.TipoVeiculo, req.Distancias);
             movido = true;
         }
