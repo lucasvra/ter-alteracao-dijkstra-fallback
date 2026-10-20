@@ -116,8 +116,22 @@ static void Otimizar(Requisicoes req)
 
     AtualizaVeiculos(viagensAntigas, veiculos, req);
 
-    var ida = AtualizaSentido(req, db, alunosAtuais, alunosAntigos, escolas, veiculos, veiculosParticulares, turnos, tiposVeiculo, sentido: 1, viagensAntigas); //IDA
-    var volta = AtualizaSentido(req, db, alunosAtuais, alunosAntigos, escolas, veiculos, veiculosParticulares, turnos, tiposVeiculo, sentido: 2, viagensAntigas); //VOLTA
+    // 0006: ida e volta decididas juntas. Fase 1 (remover/adaptar in loco) nos dois sentidos,
+    // depois a entrada de alunos em viagens existentes é decidida por aluno para ida E volta
+    // (só entra se couber nas duas), e só então cada sentido é finalizado/otimizado.
+    var turnoPorId = Insercao.MapaTurnoPorId(turnos);
+    var (viagensIda, naoAdaptadosIda) = PreparaSentido(req, alunosAtuais, alunosAntigos, escolas, turnoPorId, sentido: 1, viagensAntigas); //IDA
+    var (viagensVolta, naoAdaptadosVolta) = PreparaSentido(req, alunosAtuais, alunosAntigos, escolas, turnoPorId, sentido: 2, viagensAntigas); //VOLTA
+    SincronizaAdaptacoesRejeitadas(req, viagensIda, naoAdaptadosIda, alunosAtuais);
+
+    var alunosParaInserir = alunosAtuais.Where(at => alunosAntigos.All(an => an.Seq != at.Seq))
+        .Concat(naoAdaptadosIda).Concat(naoAdaptadosVolta)
+        .GroupBy(a => a.Seq).Select(g => g.First())
+        .ToList();
+    var alunosOtm = InserirAlunosIdaVolta(req, viagensIda, viagensVolta, alunosParaInserir, turnoPorId);
+
+    var ida = FinalizaSentido(req, alunosAtuais, escolas, veiculos, veiculosParticulares, turnos, sentido: 1, viagensIda, alunosOtm); //IDA
+    var volta = FinalizaSentido(req, alunosAtuais, escolas, veiculos, veiculosParticulares, turnos, sentido: 2, viagensVolta, alunosOtm); //VOLTA
 
     foreach (var veiculo in veiculos)
     {
@@ -176,23 +190,48 @@ static void Otimizar(Requisicoes req)
 
 }
 
-static List<Viagens> AtualizaSentido(Requisicoes req, TranscolarDB db, List<Alunos> alunosAtuais, List<Alunos> alunosAntigos, List<Escolas> escolas, List<Veiculos> veiculos, List<Veiculos> veiculosParticulares, List<Turnos> turnos, List<TiposVeiculo> tiposVeiculo, short sentido, List<Viagens> viagensAntigas)
+static (List<Viagens> viagens, List<Alunos> naoAdaptados) PreparaSentido(Requisicoes req, List<Alunos> alunosAtuais, List<Alunos> alunosAntigos, List<Escolas> escolas, IReadOnlyDictionary<int, short> turnoPorId, short sentido, List<Viagens> viagensAntigas)
 {
     var viagens = viagensAntigas.Where(v => v.Sentido == sentido).ToList();
 
+    // 0006: escolas atualizadas ANTES de adaptar/inserir, para que o filtro de escola e o
+    // desvio usem o vértice atual da escola (antes era feito só depois das inserções).
+    AtualizaEscolasDasViagens(viagens, escolas);
 
+    RemoverAlunos(viagens, alunosAntigos.Where(an => alunosAtuais.All(at => at.Seq != an.Seq)).ToList(), req);
+    var naoAdaptados = ModificarAlunos(viagens, AlunosModificados(alunosAntigos, alunosAtuais), req, turnoPorId);
 
+    return (viagens, naoAdaptados);
+}
+
+// 0005/0006: se a adaptação in loco foi rejeitada na volta depois de aceita na ida, desfaz
+// também na ida, para o aluno ser realocado nos dois sentidos (nunca separado entre veículos).
+static void SincronizaAdaptacoesRejeitadas(Requisicoes req, List<Viagens> viagensIda, List<Alunos> naoAdaptadosIda, List<Alunos> alunosAtuais)
+{
+    if (req.AdaptacoesRejeitadas.Count == 0) return;
+
+    var jaNaLista = naoAdaptadosIda.Select(a => a.Seq).ToHashSet();
+    foreach (var viagem in viagensIda)
+    {
+        var removidas = viagem.Paradas.RemoveAll(p => p.Tipo == 1 && req.AdaptacoesRejeitadas.Contains(p.Codigo));
+        if (removidas > 0) viagem.RenumeraParadas();
+    }
+
+    foreach (var aluno in alunosAtuais.Where(a => req.AdaptacoesRejeitadas.Contains(a.Seq) && !jaNaLista.Contains(a.Seq)))
+    {
+        naoAdaptadosIda.Add(aluno);
+        Log.WriteLine($"\tAluno {aluno.Seq}: adaptação rejeitada na volta, desfeita também na ida; será realocado", ConsoleColor.Yellow);
+    }
+}
+
+static List<Viagens> FinalizaSentido(Requisicoes req, List<Alunos> alunosAtuais, List<Escolas> escolas, List<Veiculos> veiculos, List<Veiculos> veiculosParticulares, List<Turnos> turnos, short sentido, List<Viagens> viagens, List<Alunos> alunosOtm)
+{
     foreach (var veiculo in veiculosParticulares)
         veiculo.TipoVeiculo = Veiculos.TipoVeiculoPelaCapacidade(veiculo.Capacidade, req);
 
     foreach (var escola in escolas)
         escola.turnos = turnos.Where(t => t.Escola == escola.Seq).ToList();
 
-    RemoverAlunos(viagens, alunosAntigos.Where(an => alunosAtuais.All(at => at.Seq != an.Seq)).ToList(), req);
-    var alunosNaoModificados = ModificarAlunos(viagens, AlunosModificados(alunosAntigos, alunosAtuais), req);
-    var alunosOtm = InserirAlunos(viagens, alunosAtuais.Where(at => alunosAntigos.All(an => an.Seq != at.Seq)).Union(alunosNaoModificados).ToList(), req);
-
-    AtualizaEscolasDasViagens(viagens, escolas);
     RemoveViagensSemAlunos(viagens, veiculos);
     AtualizaViagensReaproveitadas(viagens, alunosAtuais, req);
 
@@ -284,27 +323,76 @@ static void AtualizaVeiculos(List<Viagens> viagens, List<Veiculos> veiculos, Req
     }
 }
 
-static List<Alunos> InserirAlunos(List<Viagens> viagens, List<Alunos> alunos, Requisicoes req)
+// 0006: entrada de alunos em viagens existentes.
+//  - filtro OBRIGATÓRIO de escola (parada tipo 2 da escola do aluno) e turno (Turnos.Id -> Turnos.Turno);
+//  - posição respeitando a escola do aluno (ida: antes; volta: depois);
+//  - viagem de MENOR desvio entre as compatíveis (antes: a primeira da lista que aceitava);
+//  - duração ATUAL (soma da matriz nas paradas atuais) + desvio <= TempoMaximo
+//    (antes: viagem.Duracao da versão anterior, não atualizada entre inserções);
+//  - ida e volta juntas: só entra se houver candidato nos dois sentidos; senão vai para OtimizaTurno.
+static List<Alunos> InserirAlunosIdaVolta(Requisicoes req, List<Viagens> viagensIda, List<Viagens> viagensVolta, List<Alunos> alunos, IReadOnlyDictionary<int, short> turnoPorId)
 {
     var alunosOtm = new List<Alunos>();
+    float custo(Viagens v, int a, int b) => req.Distancias[a, b, v.TipoVeiculo];
+    float caminhada(int a, int b) => req.Distancias[a, b, 0];
 
     foreach (var aluno in alunos)
     {
-        bool inserido = false;
-        foreach (var viagem in viagens)
-        {
-            if (viagem.Paradas.Count(p => p.Tipo == 1) >= viagem.CapacidadeVeiculo) continue;
+        var limiar = aluno.LimiarCaminhada(req);
+        var ci = Insercao.MelhorCandidato(viagensIda, aluno, turnoPorId, custo, caminhada, req.ConsideraSentido, limiar, req.TempoMaximo);
+        var cv = ci == null ? null : Insercao.MelhorCandidato(viagensVolta, aluno, turnoPorId, custo, caminhada, req.ConsideraSentido, limiar, req.TempoMaximo);
 
-            inserido = MoverAluno(req, aluno, viagem);
-            if (inserido) break;
-            inserido = InserirAluno(req, aluno, viagem);
-            if (inserido) break;
+        if (ci == null || cv == null)
+        {
+            alunosOtm.Add(aluno);
+            continue;
         }
 
-        if (!inserido) alunosOtm.Add(aluno);
+        var paradaIda = AplicaCandidato(req, aluno, ci);
+        var paradaVolta = paradaIda == null ? null : AplicaCandidato(req, aluno, cv);
+        if (paradaIda == null || paradaVolta == null)
+        {
+            if (paradaIda != null)
+            {
+                ci.Viagem.Paradas.Remove(paradaIda);
+                ci.Viagem.RenumeraParadas();
+            }
+            alunosOtm.Add(aluno);
+            continue;
+        }
+
+        Log.WriteLine($"\tAluno {aluno.Seq} (escola {aluno.Escola}) -> ida {ci.Viagem.Viagem:000} ({ci.Tipo}, +{ci.Desvio:0.0} min, {ci.DuracaoAtual + ci.Desvio:0.0}/{req.TempoMaximo}), " +
+                      $"volta {cv.Viagem.Viagem:000} ({cv.Tipo}, +{cv.Desvio:0.0} min, {cv.DuracaoAtual + cv.Desvio:0.0}/{req.TempoMaximo})");
     }
 
     return alunosOtm;
+}
+
+static Paradas? AplicaCandidato(Requisicoes req, Alunos aluno, CandidatoInsercao c)
+{
+    var viagem = c.Viagem;
+    var parada = new Paradas()
+    {
+        Codigo = aluno.Seq,
+        Nome = aluno.Nome,
+        Distancia = c.Tipo == TipoInsercao.Mover ? aluno.DistanciaVia + c.Caminhada : aluno.DistanciaParada,
+        Vertice = c.Vertice,
+        Viagem = viagem.Viagem,
+        Requisicao = viagem.Requisicao,
+        Versao = req.Versao ?? 0,
+        Tipo = 1,
+        Carregamento = (short)(viagem.Sentido == 1 ? 1 : 2)
+    };
+
+    viagem.Paradas.Insert(c.Posicao, parada);
+    if (!viagem.TrafegaViagem(viagem.TipoVeiculo, req.Distancias))
+    {
+        viagem.Paradas.Remove(parada);
+        return null;
+    }
+
+    viagem.RenumeraParadas();
+    return parada;
 }
 
 static List<(Alunos aluno, bool adaptavel)> AlunosModificados(List<Alunos> alunosAntigos, List<Alunos> alunosAtuais)
@@ -323,7 +411,20 @@ static List<(Alunos aluno, bool adaptavel)> AlunosModificados(List<Alunos> aluno
     return modificados;
 }
 
-static List<Alunos> ModificarAlunos(List<Viagens> viagens, List<(Alunos aluno, bool adaptavel)> alunos, Requisicoes req)
+// Critério de tempo da adaptação in loco, alinhado à inserção (Insercao.MelhorNaViagem): o desvio e a duração
+// resultante da viagem (soma dos trechos na ordem atual) têm de ficar abaixo de TempoMaximo.
+// Adaptação que não piora a viagem é sempre aceita (viagens herdadas acima do limite).
+static bool AdaptacaoRespeitaTempo(Requisicoes req, float tempoAntes, float tempoDepois)
+{
+    if (!float.IsFinite(tempoDepois)) return false;
+
+    var desvio = tempoDepois - (float.IsFinite(tempoAntes) ? tempoAntes : 0f);
+    if (desvio <= 0) return true;
+
+    return desvio < req.TempoMaximo && tempoDepois < req.TempoMaximo;
+}
+
+static List<Alunos> ModificarAlunos(List<Viagens> viagens, List<(Alunos aluno, bool adaptavel)> alunos, Requisicoes req, IReadOnlyDictionary<int, short> turnoPorId)
 {
     var alunosAdaptaveis = alunos.Where(a => a.adaptavel).Select(a => a.aluno).ToList();
     var alunosNaoAdaptaveis = alunos.Where(a => !a.adaptavel).Select(a => a.aluno).ToList();
@@ -341,9 +442,19 @@ static List<Alunos> ModificarAlunos(List<Viagens> viagens, List<(Alunos aluno, b
             alunosAdaptaveis.Remove(aluno);
 
             var vertice = modificar.Vertice;
+            var tempoAntes = req.Distancias[viagem.Paradas.Select(p => p.Vertice), viagem.TipoVeiculo];
             modificar.Vertice = aluno.VerticeParada;
+            var tempoDepois = req.Distancias[viagem.Paradas.Select(p => p.Vertice), viagem.TipoVeiculo];
 
-            if (viagem.TrafegaViagem(viagem.TipoVeiculo, req.Distancias))
+            // Viagem pareada (ida/volta do mesmo veículo): se a adaptação já foi rejeitada no
+            // outro sentido, rejeita aqui também para não separar o aluno entre veículos.
+            var rejeitadaNoOutroSentido = req.AdaptacoesRejeitadas.Contains(aluno.Seq);
+
+            // 0006: a viagem tem de atender a escola e o turno do aluno (defesa: vale também in loco).
+            if (!rejeitadaNoOutroSentido &&
+                Insercao.ViagemCompativel(viagem, aluno, turnoPorId) &&
+                viagem.TrafegaViagem(viagem.TipoVeiculo, req.Distancias) &&
+                AdaptacaoRespeitaTempo(req, tempoAntes, tempoDepois))
             {
                 modificar.Vertice = aluno.VerticeParada;
                 modificar.Codigo = aluno.Seq;
@@ -352,8 +463,17 @@ static List<Alunos> ModificarAlunos(List<Viagens> viagens, List<(Alunos aluno, b
             }
             else
             {
+                // Desfaz a troca, tira o aluno desta viagem e devolve para o fluxo normal
+                // (InserirAlunosIdaVolta -> Mover/Inserir; se não couber, OtimizaTurno).
                 modificar.Vertice = vertice;
+                viagem.Paradas.Remove(modificar);
+                req.AdaptacoesRejeitadas.Add(aluno.Seq);
                 alunosNaoAdaptaveis.Add(aluno);
+                Log.WriteLine(
+                    $"\tAluno {aluno.Seq} não adaptado in loco na viagem {viagem.Viagem:000} " +
+                    $"(vértice {vertice}->{aluno.VerticeParada}, tempo {tempoAntes:0.0}->{tempoDepois:0.0} min, " +
+                    $"máximo {req.TempoMaximo}{(rejeitadaNoOutroSentido ? ", rejeitado no outro sentido" : "")}); será realocado",
+                    ConsoleColor.Yellow);
             }
 
         }
@@ -409,7 +529,7 @@ static void AtualizaViagensReaproveitadas(List<Viagens> viagens, List<Alunos> al
 
     foreach (var viagem in viagens)
     {
-        // NÃO reordenar por Sequencial: InserirAluno/MoverAluno inserem paradas novas com
+        // NÃO reordenar por Sequencial: InserirAlunosIdaVolta/AplicaCandidato inserem paradas novas com
         // Sequencial=0 na posição correta da lista; OrderBy(Sequencial) as jogava para o início
         // da viagem (idas e voltas, volta começando fora da escola). A ordem da lista em memória
         // é a usada por TrafegaViagem e pela checagem de tempo, e é a ordem que deve ser gravada.
@@ -706,104 +826,4 @@ static bool ValidaConexoes(Veiculos veiculo, (IntervaloTempo intervalo, int vert
     var ultimo = intervalos[^1];
     var primeiro = intervalos[0];
     return !float.IsInfinity(req.Distancias[ultimo.verticeFim, primeiro.verticeIni, veiculo.TipoVeiculo]);
-}
-
-static bool InserirAluno(Requisicoes req, Alunos aluno, Viagens viagem)
-{
-    bool inserido = false;
-    int pos = 0;
-    var minDistancia = float.PositiveInfinity;
-
-    for (int i = 0; i < viagem.Paradas.Count - 1; i++)
-    {
-        var parada = viagem.Paradas[i];
-        var proxima = viagem.Paradas[i + 1];
-        var distancia = req.Distancias[parada.Vertice, aluno.VerticeParada, viagem.TipoVeiculo] + req.Distancias[aluno.VerticeParada, proxima.Vertice, viagem.TipoVeiculo] - req.Distancias[parada.Vertice, proxima.Vertice, viagem.TipoVeiculo];
-        if (distancia < minDistancia)
-        {
-            minDistancia = distancia;
-            pos = i;
-        }
-    }
-
-    if (float.IsFinite(minDistancia) && minDistancia < req.TempoMaximo && (TimeSpan.FromMinutes(minDistancia) + (viagem.Duracao ?? TimeSpan.Zero)).TotalMinutes < req.TempoMaximo)
-    {
-        var parada = new Paradas()
-        {
-            Codigo = aluno.Seq,
-            Nome = aluno.Nome,
-            Distancia = aluno.DistanciaParada,
-            Vertice = aluno.VerticeParada,
-            Viagem = viagem.Viagem,
-            Requisicao = viagem.Requisicao,
-            Versao = req.Versao ?? 0,
-            Tipo = 1,
-            Carregamento = (short)(viagem.Sentido == 1 ? 1 : 2)
-        };
-
-        viagem.Paradas.Insert(pos + 1, parada);
-
-        if (viagem.TrafegaViagem(viagem.TipoVeiculo, req.Distancias))
-        {
-            viagem.RenumeraParadas();
-            viagem.AtualizaPosProcessamento(viagem.TipoVeiculo, req.Distancias);
-            inserido = true;
-        }
-        else
-            viagem.Paradas.Remove(parada);
-    }
-
-    return inserido;
-}
-
-static bool MoverAluno(Requisicoes req, Alunos aluno, Viagens viagem)
-{
-    bool movido = false;
-    int vertice = 0;
-    Paradas? minParada = null;
-    var minDistancia = float.PositiveInfinity;
-
-    foreach (var parada in viagem.Paradas.Where(p => p.Tipo == 1))
-    {
-        var distanciaIda = req.Distancias[aluno.VerticeVia, parada.Vertice, 0];
-        var distanciaVolta = req.Distancias[parada.Vertice, aluno.VerticeVia, 0];
-        var distancia = req.ConsideraSentido ? Math.Max(distanciaIda, distanciaVolta) : distanciaIda;
-
-        if (distancia < minDistancia)
-        {
-            minDistancia = distancia;
-            vertice = parada.Vertice;
-            minParada = parada;
-        }
-    }
-
-    if (minParada != null && float.IsFinite(minDistancia) && aluno.DistanciaVia + minDistancia <= aluno.LimiarCaminhada(req))
-    {
-        var parada = new Paradas()
-        {
-            Codigo = aluno.Seq,
-            Nome = aluno.Nome,
-            Distancia = aluno.DistanciaVia + minDistancia,
-            Vertice = vertice,
-            Viagem = viagem.Viagem,
-            Requisicao = viagem.Requisicao,
-            Versao = req.Versao ?? 0,
-            Tipo = 1,
-            Carregamento = (short)(viagem.Sentido == 1 ? 1 : 2)
-        };
-
-        int pos = viagem.Paradas.IndexOf(minParada);
-        viagem.Paradas.Insert(pos + 1, parada);
-
-        if (viagem.TrafegaViagem(viagem.TipoVeiculo, req.Distancias))
-        {
-            viagem.RenumeraParadas();
-            viagem.AtualizaPosProcessamento(viagem.TipoVeiculo, req.Distancias);
-            movido = true;
-        }
-        else
-            viagem.Paradas.Remove(parada);
-    }
-
-    return movido;
 }

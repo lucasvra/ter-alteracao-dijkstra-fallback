@@ -575,6 +575,9 @@ namespace Otimizacao
                                .FirstOrDefault(((short)0, (short)0));
         }
 
+        /// <summary>Alunos cuja adaptação in loco foi rejeitada (vale para a viagem pareada do outro sentido).</summary>
+        public HashSet<int> AdaptacoesRejeitadas { get; } = new();
+
         int numViagem = 1;
         public int NovaViagem
         {
