@@ -599,4 +599,109 @@ public class InsercaoTests
         Assert.True(Dur(v, Metros167) < kmAntes);                       // 17,75 km → 14,25 km
         Assert.Equal(14246.7f, Dur(v, Metros167), 0);
     }
+
+    // ---------------- 0010: troca in loco -> melhor viagem (critério da 0006) ----------------
+    // REAL (diag5 E1/E2/E4): 1956052 mudou de 6211 para 6787 (coordenada ~14,5 km; distancia_via 580,41 m).
+    // 23/24 (v1 074cc73): ... 6211×2, 5851, 6787, escola 22578 (4791) e o espelho na volta; tempos da matriz.
+    // 27/28 passam a 224,14 m do novo ponto (vértice 6517) e 87/88 a 1.199,51 m (6635).
+    // Sintético: o resto da sequência de 27/28 e 87/88 e o limiar (2.000 m, o da req em B3).
+    private static readonly Dictionary<(int, int), float> Min23 = new()
+    {
+        [(6262, 6337)] = 15.423322f, [(6189, 6337)] = 5.9998913f, [(2491, 6189)] = 14.82008f, [(2491, 5106)] = 4.366694f,
+        [(5106, 6211)] = 3.6931262f, [(5851, 6211)] = 3.835498f, [(5851, 6787)] = 13.421587f, [(4791, 6787)] = 11.291571f,
+        [(4791, 5851)] = 3.1030343f,
+        // 27/28 e 87/88 (sintéticos)
+        [(6517, 6600)] = 5f, [(6517, 6610)] = 4f, [(4791, 6610)] = 10f, [(6600, 6610)] = 8f,
+        [(6635, 6700)] = 6f, [(4791, 6635)] = 9f, [(4791, 6700)] = 12f,
+    };
+    private static float CustoMin23(Viagens _, int a, int b) =>
+        a == b ? 0 : Min23.TryGetValue((Math.Min(a, b), Math.Max(a, b)), out var t) ? t : 99f;
+    private static float Caminhada23(int a, int b) => (Math.Min(a, b), Math.Max(a, b)) switch
+    {
+        (6517, 6787) => 224.13762f, (6635, 6787) => 1199.508f, _ => 15000f
+    };
+    private static readonly Dictionary<int, short> Turno23 = Insercao.MapaTurnoPorId(new[] { new Turnos { Id = 129554, Escola = 22578, Turno = 1 } });
+    private static Alunos Aluno1956052() => new()
+    {
+        Seq = 1956052, Escola = 22578, Turno = 129554, VerticeParada = 6787, VerticeVia = 6787, DistanciaVia = 580.4138f, DistanciaParada = 580.4138f
+    };
+    private static (Viagens ida, Viagens volta) Viagens23_24()
+    {
+        Paradas[] ida = { Aluno(2024104, 6262), Aluno(2063178, 6262), Aluno(2053013, 6337), Aluno(2041064, 6189), Aluno(1953759, 2491),
+                          Aluno(2072940, 5106), Aluno(2024109, 6211), Aluno(1907956, 6211), Aluno(1956802, 5851), Aluno(1956052, 6787),
+                          Escola(22578, 4791) };
+        var volta = new[] { Escola(22578, 4791) }.Concat(ida.Take(ida.Length - 1).Reverse().Select(p => Aluno(p.Codigo, p.Vertice))).ToArray();
+        return (Viagem(23, 1, 1, ida), Viagem(24, 2, 1, volta));
+    }
+    private static (Viagens, Viagens) Viagens27_28() =>
+        (Viagem(27, 1, 1, Aluno(1, 6600), Aluno(2, 6517), Aluno(3, 6610), Escola(22578, 4791)),
+         Viagem(28, 2, 1, Escola(22578, 4791), Aluno(3, 6610), Aluno(2, 6517), Aluno(1, 6600)));
+    private static (Viagens, Viagens) Viagens87_88() =>
+        (Viagem(87, 1, 1, Aluno(11, 6700), Aluno(12, 6635), Escola(22578, 4791)),
+         Viagem(88, 2, 1, Escola(22578, 4791), Aluno(12, 6635), Aluno(11, 6700)));
+
+    [Fact]
+    public void Real1956052_TrocaInLoco_VaiPara27e28_PorMover()
+    {
+        var (h23, h24) = Viagens23_24();
+        var (v27, v28) = Viagens27_28();
+        var (v87, v88) = Viagens87_88();
+        var aluno = Aluno1956052();
+
+        var r = Insercao.MelhorRealocacaoInLoco(h23, h24, aluno, new[] { h23, v27, v87 }, new[] { h24, v28, v88 }, Turno23,
+                                                CustoMin23, Caminhada23, false, limiarCaminhada: 2000, tempoMaximo: 120);
+        Assert.NotNull(r);
+        // custo marginal real na herdada: 13,42 + 11,29 − 3,10 = 21,61 min por sentido
+        Assert.Equal(43.22f, r!.DesvioHerdada, 1);
+        Assert.Same(v27, r.Ida.Viagem);
+        Assert.Same(v28, r.Volta.Viagem);                    // 27/28 (224 m) vence 87/88 (1,2 km) no empate do Mover
+        Assert.Equal(TipoInsercao.Mover, r.Ida.Tipo);
+        Assert.Equal(6517, r.Ida.Vertice);
+        Assert.Equal(0f, r.DesvioNovo);
+        Assert.Equal(804.551f, aluno.DistanciaVia + r.Ida.Caminhada, 2); // 580,41 + 224,14 <= 2000
+
+        // Aplica como RealocaTrocasInLoco (Program.cs): tira das herdadas e insere nas novas.
+        h23.Paradas.RemoveAll(p => p.Codigo == 1956052);
+        h24.Paradas.RemoveAll(p => p.Codigo == 1956052);
+        v27.Paradas.Insert(r.Ida.Posicao, Aluno(1956052, r.Ida.Vertice));
+        v28.Paradas.Insert(r.Volta.Posicao, Aluno(1956052, r.Volta.Vertice));
+        Assert.Equal(51.24f, Dur(h23, (a, b) => CustoMin23(h23, a, b)), 1); // volta à duração da v0 (51,2 min)
+        foreach (var v in new[] { h23, h24, v27, v28 }) Assert.Equal(0, Revisitas(v));
+        Assert.Equal(new[] { 6600, 6517, 6517, 6610, 4791 }, v27.Paradas.Select(p => p.Vertice).ToArray());
+    }
+
+    [Fact]
+    public void TrocaInLoco_FicaNaHerdada_QuandoOutraViagemNaoECompativelOuEPior()
+    {
+        var aluno = Aluno1956052();
+
+        // (1) 27/28 de outro turno (código 2) e 87/88 sem a escola do aluno → nenhuma compatível.
+        var (h23, h24) = Viagens23_24();
+        var (v27, v28) = Viagens27_28(); v27.Turno = 2; v28.Turno = 2;
+        var w87 = Viagem(87, 1, 1, Aluno(11, 6700), Aluno(12, 6635), Escola(99999, 4791));
+        var w88 = Viagem(88, 2, 1, Escola(99999, 4791), Aluno(12, 6635), Aluno(11, 6700));
+        Assert.Null(Insercao.MelhorRealocacaoInLoco(h23, h24, aluno, new[] { h23, v27, w87 }, new[] { h24, v28, w88 }, Turno23,
+                                                    CustoMin23, Caminhada23, false, 2000, 120));
+
+        // (2) Sem Mover (limiar 100 m): inserir 6787 em 27/28 custa 99 + 99 − 5 min por sentido > 43,2 → fica.
+        var (x27, x28) = Viagens27_28();
+        Assert.Null(Insercao.MelhorRealocacaoInLoco(h23, h24, aluno, new[] { h23, x27 }, new[] { h24, x28 }, Turno23,
+                                                    CustoMin23, Caminhada23, false, 100, 500));
+
+        // (3) Ida e volta juntas: só a ida tem candidato (volta 28 lotada) → fica.
+        var (y27, y28) = Viagens27_28(); y28.CapacidadeVeiculo = 3;
+        Assert.Null(Insercao.MelhorRealocacaoInLoco(h23, h24, aluno, new[] { h23, y27 }, new[] { h24, y28 }, Turno23,
+                                                    CustoMin23, Caminhada23, false, 2000, 120));
+        Assert.Equal(11, h23.Paradas.Count);                 // nada foi mexido
+    }
+
+    [Fact]
+    public void CustoMarginal_ParadaNoMesmoVerticeDeOutra_CustaZero()
+    {
+        var p = Aluno(2, 30);
+        var v = Viagem(1, 1, 1, Aluno(1, 30), p, Aluno(3, 50), Escola(10, 100));
+        Assert.Equal(0f, Insercao.CustoMarginal(v, p, Custo));
+        Assert.Equal(20f, Insercao.CustoMarginal(v, v.Paradas[2], (a, b) => (Math.Min(a, b), Math.Max(a, b)) switch
+        { (30, 50) => 20, (50, 100) => 50, (30, 100) => 50, _ => 99 }));
+    }
 }

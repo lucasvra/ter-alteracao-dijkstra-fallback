@@ -128,6 +128,9 @@ static void Otimizar(Requisicoes req)
     var (viagensIda, naoAdaptadosIda) = PreparaSentido(req, alunosAtuais, alunosAntigos, escolas, turnoPorId, sentido: 1, viagensAntigas); //IDA
     var (viagensVolta, naoAdaptadosVolta) = PreparaSentido(req, alunosAtuais, alunosAntigos, escolas, turnoPorId, sentido: 2, viagensAntigas); //VOLTA
     SincronizaAdaptacoesRejeitadas(req, viagensIda, naoAdaptadosIda, alunosAtuais);
+    // 0010: aluno trocado in loco vai para outra viagem compatível se o desvio lá (ida+volta, critério
+    // da 0006) for menor que o que ele custa na viagem herdada.
+    RealocaTrocasInLoco(req, viagensIda, viagensVolta, AlunosModificados(alunosAntigos, alunosAtuais), turnoPorId);
 
     var alunosParaInserir = alunosAtuais.Where(at => alunosAntigos.All(an => an.Seq != at.Seq))
         .Concat(naoAdaptadosIda).Concat(naoAdaptadosVolta)
@@ -371,6 +374,53 @@ static List<Alunos> InserirAlunosIdaVolta(Requisicoes req, List<Viagens> viagens
     }
 
     return alunosOtm;
+}
+
+// 0010: troca in loco → melhor viagem. Para cada aluno adaptado in loco (presente na ida e na volta
+// herdadas), compara o custo marginal dele nas herdadas com o melhor candidato (Insercao.MelhorCandidato,
+// 0006: escola/turno, lotação, janela da escola, TempoMaximo) nas outras viagens, ida e volta juntas.
+// Se for menor, tira a parada das herdadas (renumera; viagem que ficar sem alunos sai em
+// RemoveViagensSemAlunos, no FinalizaSentido) e aplica os dois candidatos; se a aplicação falhar,
+// desfaz tudo. Não há teto de km aqui (decisão do Lucas).
+static void RealocaTrocasInLoco(Requisicoes req, List<Viagens> viagensIda, List<Viagens> viagensVolta,
+    List<(Alunos aluno, bool adaptavel)> modificados, IReadOnlyDictionary<int, short> turnoPorId)
+{
+    float custo(Viagens v, int a, int b) => req.Distancias[a, b, v.TipoVeiculo];
+    float caminhada(int a, int b) => req.Distancias[a, b, 0];
+
+    foreach (var aluno in modificados.Where(m => m.adaptavel).Select(m => m.aluno))
+    {
+        if (req.AdaptacoesRejeitadas.Contains(aluno.Seq)) continue;
+        var hi = viagensIda.FirstOrDefault(v => v.Paradas.Any(p => p.Tipo == 1 && p.Codigo == aluno.Seq));
+        var hv = viagensVolta.FirstOrDefault(v => v.Paradas.Any(p => p.Tipo == 1 && p.Codigo == aluno.Seq));
+        if (hi == null || hv == null) continue;
+
+        var r = Insercao.MelhorRealocacaoInLoco(hi, hv, aluno, viagensIda, viagensVolta, turnoPorId, custo, caminhada,
+                                                req.ConsideraSentido, aluno.LimiarCaminhada(req), req.TempoMaximo);
+        if (r == null) continue;
+
+        var pi = hi.Paradas.First(p => p.Tipo == 1 && p.Codigo == aluno.Seq);
+        var pv = hv.Paradas.First(p => p.Tipo == 1 && p.Codigo == aluno.Seq);
+        var (ii, iv) = (hi.Paradas.IndexOf(pi), hv.Paradas.IndexOf(pv));
+        hi.Paradas.Remove(pi);
+        hv.Paradas.Remove(pv);
+
+        var novaIda = AplicaCandidato(req, aluno, r.Ida);
+        var novaVolta = novaIda == null ? null : AplicaCandidato(req, aluno, r.Volta);
+        if (novaIda == null || novaVolta == null)
+        {
+            if (novaIda != null) { r.Ida.Viagem.Paradas.Remove(novaIda); r.Ida.Viagem.RenumeraParadas(); }
+            hi.Paradas.Insert(ii, pi);
+            hv.Paradas.Insert(iv, pv);
+            continue;
+        }
+
+        hi.RenumeraParadas();
+        hv.RenumeraParadas();
+        Log.WriteLine($"\tAluno {aluno.Seq}: troca in loco realocada {hi.Viagem:000}/{hv.Viagem:000} (+{r.DesvioHerdada:0.0} min) -> " +
+                      $"ida {r.Ida.Viagem.Viagem:000} ({r.Ida.Tipo}, +{r.Ida.Desvio:0.0}) / volta {r.Volta.Viagem.Viagem:000} " +
+                      $"({r.Volta.Tipo}, +{r.Volta.Desvio:0.0})");
+    }
 }
 
 static Paradas? AplicaCandidato(Requisicoes req, Alunos aluno, CandidatoInsercao c)

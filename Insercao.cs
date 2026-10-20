@@ -319,6 +319,50 @@ namespace ter_otimizacao
             return volta ? idx > idxEscola : idx < idxEscola;
         }
 
+        /// <summary>0010: proposta de mover um aluno trocado in loco da viagem herdada (ida+volta) para outras.</summary>
+        public sealed record RealocacaoInLoco(Viagens HerdadaIda, Viagens HerdadaVolta, CandidatoInsercao Ida,
+                                              CandidatoInsercao Volta, float DesvioHerdada, float DesvioNovo);
+
+        /// <summary>0010: minutos que a parada p acrescenta à viagem (duração com p − duração sem p).</summary>
+        public static float CustoMarginal(Viagens viagem, Paradas p, Func<int, int, float> custo)
+        {
+            var com = viagem.Paradas.Select(x => x.Vertice).ToList();
+            var sem = viagem.Paradas.Where(x => !ReferenceEquals(x, p)).Select(x => x.Vertice).ToList();
+            return Duracao(com, custo) - Duracao(sem, custo);
+        }
+
+        /// <summary>
+        /// 0010: troca in loco (aluno mudou de vértice, mesma escola e turno). Compara o desvio que o
+        /// aluno custa na viagem herdada (ida + volta, custo marginal na posição atual) com o melhor
+        /// candidato da 0006 (<see cref="MelhorCandidato"/>: escola e turno, lotação, janela da escola,
+        /// TempoMaximo, Mover antes de Inserir no empate) nas OUTRAS viagens de cada sentido.
+        /// Ida e volta decididas juntas: só propõe se houver candidato nos dois sentidos e a soma dos
+        /// desvios for menor que a da herdada. Null = fica na herdada. Não muta nada.
+        /// </summary>
+        public static RealocacaoInLoco? MelhorRealocacaoInLoco(Viagens herdadaIda, Viagens herdadaVolta, Alunos aluno,
+            IEnumerable<Viagens> viagensIda, IEnumerable<Viagens> viagensVolta, IReadOnlyDictionary<int, short> turnoPorId,
+            Func<Viagens, int, int, float> custo, Func<int, int, float> caminhada, bool consideraSentido,
+            double limiarCaminhada, float tempoMaximo)
+        {
+            var pi = herdadaIda.Paradas.FirstOrDefault(p => p.Tipo == 1 && p.Codigo == aluno.Seq);
+            var pv = herdadaVolta.Paradas.FirstOrDefault(p => p.Tipo == 1 && p.Codigo == aluno.Seq);
+            if (pi == null || pv == null) return null;
+
+            var dh = CustoMarginal(herdadaIda, pi, (a, b) => custo(herdadaIda, a, b))
+                   + CustoMarginal(herdadaVolta, pv, (a, b) => custo(herdadaVolta, a, b));
+            if (!float.IsFinite(dh) || dh <= EpsilonDesvio) return null;
+
+            var ci = MelhorCandidato(viagensIda.Where(v => !ReferenceEquals(v, herdadaIda)), aluno, turnoPorId, custo,
+                                     caminhada, consideraSentido, limiarCaminhada, tempoMaximo);
+            if (ci == null) return null;
+            var cv = MelhorCandidato(viagensVolta.Where(v => !ReferenceEquals(v, herdadaVolta)), aluno, turnoPorId, custo,
+                                     caminhada, consideraSentido, limiarCaminhada, tempoMaximo);
+            if (cv == null) return null;
+
+            var dn = ci.Desvio + cv.Desvio;
+            return dn < dh - EpsilonDesvio ? new RealocacaoInLoco(herdadaIda, herdadaVolta, ci, cv, dh, dn) : null;
+        }
+
         /// <summary>
         /// Melhor candidato entre todas as viagens: menor desvio; empate → Mover antes de
         /// Inserir, menor caminhada, menor ocupação, menor número de viagem (determinístico).
