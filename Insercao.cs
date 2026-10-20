@@ -97,23 +97,197 @@ namespace ter_otimizacao
             if (mover != null) return mover;
 
             // Inserir: novo vértice entre Paradas[i] e Paradas[i+1], menor desvio em minutos.
+            // 0007: desvio negativo (matriz não métrica: matriz × fallback Dijkstra, arredondamento)
+            // vira 0 e, no empate, vence a posição COLADA a uma parada no mesmo vértice — evita
+            // revisitar um vértice que a viagem já tem (D5).
             var (ini, fim) = JanelaInsercao(viagem, idxEscola);
-            var minDesvio = float.PositiveInfinity;
-            var pos = -1;
-            for (var i = ini; i <= fim; i++)
-            {
-                var a = vertices[i];
-                var b = vertices[i + 1];
-                var d = (a == aluno.VerticeParada ? 0 : custo(a, aluno.VerticeParada))
-                      + (aluno.VerticeParada == b ? 0 : custo(aluno.VerticeParada, b))
-                      - (a == b ? 0 : custo(a, b));
-                if (d < minDesvio) { minDesvio = d; pos = i; }
-            }
+            var (pos, minDesvio) = MelhorPosicao(vertices, ini, fim, aluno.VerticeParada, custo);
 
             if (pos < 0 || !float.IsFinite(minDesvio)) return null;
             if (!(minDesvio < tempoMaximo) || duracao + minDesvio > tempoMaximo) return null;
 
             return new CandidatoInsercao(viagem, TipoInsercao.Inserir, pos + 1, aluno.VerticeParada, minDesvio, duracao, 0f);
+        }
+
+        public const float EpsilonDesvio = 1e-3f;
+
+        /// <summary>
+        /// 0007: melhor i em [ini, fim] para inserir o vértice x entre vertices[i] e vertices[i+1].
+        /// Desvio &lt; 0 é tratado como 0 (desigualdade triangular violada); em empate (± eps),
+        /// prefere a posição colada a um vértice igual a x, depois a que não parte um grupo de
+        /// paradas no mesmo vértice, depois a primeira.
+        /// </summary>
+        public static (int pos, float desvio) MelhorPosicao(IReadOnlyList<int> vertices, int ini, int fim, int x, Func<int, int, float> custo)
+        {
+            // qualidade no empate: 0 = colado a um vértice igual a x; 1 = neutro;
+            // 2 = parte um grupo de paradas no mesmo vértice (a == b != x) → revisita certa.
+            static int Qualidade(int a, int b, int x) => a == x || b == x ? 0 : a == b ? 2 : 1;
+
+            var minDesvio = float.PositiveInfinity;
+            var minQ = int.MaxValue;
+            var pos = -1;
+            for (var i = ini; i <= fim; i++)
+            {
+                var a = vertices[i];
+                var b = vertices[i + 1];
+                var d = (a == x ? 0 : custo(a, x)) + (x == b ? 0 : custo(x, b)) - (a == b ? 0 : custo(a, b));
+                if (float.IsNaN(d)) continue;
+                d = Math.Max(d, 0f);
+                var q = Qualidade(a, b, x);
+                if (d < minDesvio - EpsilonDesvio || (d <= minDesvio + EpsilonDesvio && q < minQ))
+                {
+                    minDesvio = d;
+                    minQ = q;
+                    pos = i;
+                }
+            }
+            return (pos, minDesvio);
+        }
+
+        /// <summary>
+        /// 0007: reposiciona uma parada JÁ existente (troca in loco de vértice) na melhor posição da
+        /// mesma viagem, respeitando o lado da escola. Guarda de tempo: <see cref="RespeitaTempo"/>.
+        /// Resolve o caso Y–X–Y (aluno do meio de um grupo em Y trocado para X) e X duplicado.
+        /// </summary>
+        public static bool ReposicionaParada(Viagens viagem, Paradas parada, int escola, Func<int, int, float> custo,
+            float tempoMaximo = float.PositiveInfinity)
+        {
+            var original = viagem.Paradas.IndexOf(parada);
+            if (original < 0) return false;
+            var antes = Duracao(viagem.Paradas.Select(p => p.Vertice).ToList(), custo);
+
+            viagem.Paradas.RemoveAt(original);
+            var idxEscola = IndiceEscola(viagem, escola);
+            if (idxEscola < 0 || viagem.Paradas.Count < 2) { viagem.Paradas.Insert(original, parada); return false; }
+
+            var vertices = viagem.Paradas.Select(p => p.Vertice).ToList();
+            var (ini, fim) = JanelaInsercao(viagem, idxEscola);
+            var (pos, _) = MelhorPosicao(vertices, ini, fim, parada.Vertice, custo);
+            if (pos < 0) { viagem.Paradas.Insert(original, parada); return false; }
+
+            viagem.Paradas.Insert(pos + 1, parada);
+            var depois = Duracao(viagem.Paradas.Select(p => p.Vertice).ToList(), custo);
+            if (pos + 1 == original) return false;
+            if (RespeitaTempo(antes, depois, tempoMaximo)) return true;
+
+            Log.WriteLine($"\tViagem {viagem.Viagem:000}: reposicionamento do vértice {parada.Vertice} recusado " +
+                          $"(duração {antes:0.0} -> {depois:0.0} min, máximo {tempoMaximo})", ConsoleColor.Yellow);
+            viagem.Paradas.Remove(parada);
+            viagem.Paradas.Insert(original, parada);
+            return false;
+        }
+
+        /// <summary>
+        /// 0007: ordem estável que junta itens do mesmo vértice na posição da 1ª ocorrência
+        /// (usada em Rota.ToViagem). Numa métrica, tirar uma visita repetida nunca aumenta o percurso.
+        /// </summary>
+        public static List<T> AgrupaPorVertice<T>(IEnumerable<T> itens, Func<T, int> vertice) =>
+            itens.Select((x, i) => (x, i))
+                 .GroupBy(t => vertice(t.x))
+                 .OrderBy(g => g.Min(t => t.i))
+                 .SelectMany(g => g.OrderBy(t => t.i).Select(t => t.x))
+                 .ToList();
+
+        /// <summary>
+        /// 0007: garante UM bloco por vértice na viagem (D5 = 0). Para cada vértice em mais de um bloco,
+        /// as paradas de aluno (tipo 1) desse vértice são levadas para um dos blocos existentes dele
+        /// (ida: início do bloco; volta: fim do bloco), escolhendo o de menor duração entre os que
+        /// respeitam o lado da escola de cada aluno (ida: antes da escola; volta: depois).
+        /// Paradas de escola (tipo 2/0) não se movem: se o vértice tem escola, o alvo é o bloco dela.
+        /// Não junta (e registra) quando nenhuma opção é factível (ex.: aluno de A no vértice de uma
+        /// parada que fica depois da escola A) ou quando a guarda de TempoMaximo (RespeitaTempo) barra.
+        /// Vale para viagens herdadas, inserções e trocas in loco.
+        /// </summary>
+        /// <returns>Número de vértices fundidos.</returns>
+        public static int AgrupaVerticesIguais(Viagens viagem, Func<int, int?> escolaDoAluno, Func<int, int, float> custo,
+            float tempoMaximo = float.PositiveInfinity)
+        {
+            var fundidos = 0;
+            var impossiveis = new HashSet<int>();
+            var volta = viagem.Sentido == SentidoVolta;
+
+            for (var guarda = 0; guarda < 1000; guarda++)
+            {
+                var blocos = Blocos(viagem.Paradas);
+                var dup = blocos.GroupBy(b => b.vertice)
+                                .FirstOrDefault(g => g.Count() > 1 && !impossiveis.Contains(g.Key));
+                if (dup == null) break;
+
+                var v = dup.Key;
+                var fixos = dup.Where(b => viagem.Paradas.Skip(b.ini).Take(b.fim - b.ini + 1).Any(p => p.Tipo != 1)).ToList();
+                if (fixos.Count > 1) { impossiveis.Add(v); continue; }
+                var alvos = fixos.Count == 1 ? fixos : dup.ToList();
+
+                var antes = Duracao(viagem.Paradas.Select(p => p.Vertice).ToList(), custo);
+                List<Paradas>? melhor = null;
+                var melhorDur = float.PositiveInfinity;
+                var melhorRecusada = float.PositiveInfinity; // menor duração factível barrada pela guarda (log)
+                foreach (var alvo in alvos)
+                {
+                    var noAlvo = viagem.Paradas.Skip(alvo.ini).Take(alvo.fim - alvo.ini + 1).ToList();
+                    var mover = viagem.Paradas.Where((p, i) => p.Vertice == v && p.Tipo == 1 && (i < alvo.ini || i > alvo.fim)).ToList();
+                    var lista = viagem.Paradas.Where(p => !mover.Contains(p)).ToList();
+                    var pos = volta ? lista.IndexOf(noAlvo[^1]) + 1 : lista.IndexOf(noAlvo[0]);
+                    lista.InsertRange(pos, mover);
+
+                    if (!mover.All(p => LadoDaEscolaOk(lista, p, escolaDoAluno(p.Codigo), volta))) continue;
+                    var dur = Duracao(lista.Select(p => p.Vertice).ToList(), custo);
+                    if (!float.IsFinite(dur)) continue;
+                    if (!RespeitaTempo(antes, dur, tempoMaximo)) { melhorRecusada = Math.Min(melhorRecusada, dur); continue; }
+                    if (dur < melhorDur - EpsilonDesvio) { melhorDur = dur; melhor = lista; }
+                }
+
+                if (melhor == null)
+                {
+                    if (float.IsFinite(melhorRecusada))
+                        Log.WriteLine($"\tViagem {viagem.Viagem:000}: vértice {v} não reagrupado — duração {antes:0.0} -> {melhorRecusada:0.0} min, " +
+                                      $"máximo {tempoMaximo}{(antes > tempoMaximo ? " (já estourava; só reagrupa se não piorar)" : "")}", ConsoleColor.Yellow);
+                    impossiveis.Add(v);
+                    continue;
+                }
+                viagem.Paradas.Clear();
+                viagem.Paradas.AddRange(melhor);
+                fundidos++;
+            }
+
+            foreach (var v in impossiveis)
+                Log.WriteLine($"\tViagem {viagem.Viagem:000}: vértice {v} fica em mais de um bloco (escola, lado da escola ou TempoMaximo impedem juntar)", ConsoleColor.Yellow);
+            return fundidos;
+        }
+
+        /// <summary>
+        /// 0007: guarda de tempo do reagrupamento/reposicionamento. Viagem dentro do limite
+        /// (antes &lt;= TempoMaximo): aceita se depois &lt;= TempoMaximo. Viagem que já estourava:
+        /// aceita só se não piorar (depois &lt;= antes, ± eps).
+        /// </summary>
+        public static bool RespeitaTempo(float antes, float depois, float tempoMaximo)
+        {
+            if (!float.IsFinite(depois)) return false;
+            if (float.IsFinite(antes) && antes > tempoMaximo + EpsilonDesvio) return depois <= antes + EpsilonDesvio;
+            return depois <= tempoMaximo + EpsilonDesvio;
+        }
+
+        /// <summary>Blocos de paradas consecutivas no mesmo vértice (índices inclusivos).</summary>
+        public static List<(int vertice, int ini, int fim)> Blocos(IReadOnlyList<Paradas> paradas)
+        {
+            var blocos = new List<(int vertice, int ini, int fim)>();
+            for (var i = 0; i < paradas.Count; i++)
+            {
+                if (blocos.Count > 0 && blocos[^1].vertice == paradas[i].Vertice)
+                    blocos[^1] = (blocos[^1].vertice, blocos[^1].ini, i);
+                else
+                    blocos.Add((paradas[i].Vertice, i, i));
+            }
+            return blocos;
+        }
+
+        private static bool LadoDaEscolaOk(List<Paradas> lista, Paradas p, int? escola, bool volta)
+        {
+            if (escola is not int e) return true;
+            var idxEscola = lista.FindIndex(x => x.Tipo == 2 && x.Codigo == e);
+            if (idxEscola < 0) return true;
+            var idx = lista.IndexOf(p);
+            return volta ? idx > idxEscola : idx < idxEscola;
         }
 
         /// <summary>

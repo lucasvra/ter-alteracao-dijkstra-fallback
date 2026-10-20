@@ -460,6 +460,13 @@ static List<Alunos> ModificarAlunos(List<Viagens> viagens, List<(Alunos aluno, b
                 modificar.Codigo = aluno.Seq;
                 modificar.Distancia = aluno.DistanciaParada;
                 modificar.Nome = aluno.Nome;
+
+                // 0007: a troca in loco mantém a posição antiga; se o novo vértice já existe em outro
+                // ponto da viagem (ou o aluno estava no meio de um grupo no vértice antigo, Y–X–Y),
+                // isso gera revisita. Reposiciona na mesma viagem quando não piora a duração.
+                if (Insercao.ReposicionaParada(viagem, modificar, aluno.Escola!.Value,
+                        (a, b) => req.Distancias[a, b, viagem.TipoVeiculo], req.TempoMaximo))
+                    Log.WriteLine($"\tAluno {aluno.Seq}: parada reposicionada na viagem {viagem.Viagem:000} (evita revisita)");
             }
             else
             {
@@ -544,6 +551,15 @@ static void AtualizaViagensReaproveitadas(List<Viagens> viagens, List<Alunos> al
         viagem.OcupacaoMaxima = (short)alunosViagem.Count;
         viagem.Monitor = alunosViagem.Any(a => a.TipoEnsino is 1 or 2);
         viagem.VeiculoEspecial = alunosViagem.Any(a => a.VeiculoEspecial);
+
+        // 0007: um bloco por vértice (herdadas inclusive: a v1 renumera e expõe Y–X–Y que viesse da
+        // troca in loco, da inserção ou da ordem herdada). Feito antes de renumerar e recalcular tempos.
+        // Guarda: só reagrupa se a duração final <= TempoMaximo (ou, se já estourava, se não piorar).
+        var fundidos = Insercao.AgrupaVerticesIguais(viagem,
+            seq => alunosPorSeq.TryGetValue(seq, out var al) ? al.Escola : null,
+            (a, b) => req.Distancias[a, b, viagem.TipoVeiculo], req.TempoMaximo);
+        if (fundidos > 0)
+            Log.WriteLine($"\tViagem {viagem.Viagem:000}: {fundidos} vértice(s) reagrupado(s) num só bloco");
 
         viagem.RenumeraParadas();
 

@@ -477,7 +477,8 @@ namespace ter_otimizacao
 
         public Viagens ToViagem(short sentido, short turno) // sentido 1 = ida, 2 = volta
         {
-            var alunosViagem = alunos.ToList();
+            // 0007: alunos no mesmo vértice ficam juntos (um bloco por vértice, D5 = 0).
+            var alunosViagem = Insercao.AgrupaPorVertice(alunos, a => a.VerticeParada);
             var alunosInseridos = new List<Alunos>(alunosViagem.Count);
             int numViagem = requisicao.NovaViagem;
             var paradas = new List<Paradas>();
