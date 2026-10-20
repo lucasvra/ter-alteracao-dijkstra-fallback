@@ -443,4 +443,19 @@ public class InsercaoTests
         var c2 = Insercao.MelhorNaViagem(v, aluno, turnos, Custo, caminhada, false, limiarCaminhada: 700, tempoMaximo: 100000); // custo de teste = |a-b|
         Assert.Equal(4572, c2!.Vertice);
     }
+
+    // ---------------- 0008: noturno pelo código do turno ----------------
+
+    [Fact]
+    public void Noturno_UsaCodigoDoTurno_NaoOId()
+    {
+        var req = new Requisicoes { CaminhadaMaximaEm = 1000, CaminhadaMaximaNoturno = 500 };
+        var noite = new Alunos { Turno = 132058, TipoEnsino = 4, Horario = new Turnos { Id = 132058, Turno = 3 } };
+        var manha = new Alunos { Turno = 132056, TipoEnsino = 4, Horario = new Turnos { Id = 132056, Turno = 1 } };
+        var idTres = new Alunos { Turno = 3, TipoEnsino = 4, Horario = new Turnos { Id = 3, Turno = 1 } }; // id 3, mas manhã
+        Assert.Equal(500, noite.LimiarCaminhada(req));
+        Assert.Equal(1000, manha.LimiarCaminhada(req));
+        Assert.Equal(1000, idTres.LimiarCaminhada(req));
+        Assert.Equal(1000, new Alunos { Turno = 132058, TipoEnsino = 4 }.LimiarCaminhada(req)); // sem Horario: sem noturno
+    }
 }

@@ -160,6 +160,9 @@ namespace Otimizacao
 
         public Turnos Horario { get; set; }
 
+        /// <summary>0008: código do turno (Turnos.Turno: 1 manhã, 2 tarde, 3 noite, ...); null sem Horario.</summary>
+        public short? TurnoCodigo => Horario?.Turno;
+
         public string TurnoIda => Horario.HrInicio.Hour switch
         {
             >= 0 and < 12 => "M",
@@ -204,7 +207,9 @@ namespace Otimizacao
                     break;
             }
 
-            if (Turno == 3 && requisicao.CaminhadaMaximaNoturno < limiar)
+            // 0008: Turno é o id de turnos_req; o noturno é o CÓDIGO Turnos.Turno == 3 (via Horario).
+            // Antes comparava o id (ex.: 132058) com 3 e o limite noturno nunca era aplicado.
+            if (TurnoCodigo == 3 && requisicao.CaminhadaMaximaNoturno < limiar)
                 return requisicao.CaminhadaMaximaNoturno ?? 0;
 
             return limiar;

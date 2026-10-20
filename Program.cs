@@ -97,6 +97,11 @@ static void Otimizar(Requisicoes req)
             return t;
         })
         .ToList();
+    // 0008: Horario = linha de turnos_req do aluno (alunos_req.turno é Turnos.Id). Usado por
+    // LimiarCaminhada para reconhecer o noturno pelo código (Turnos.Turno == 3), não pelo id.
+    foreach (var aluno in alunosAtuais.Concat(alunosAntigos))
+        aluno.Horario = turnos.FirstOrDefault(t => t.Id == aluno.Turno)!;
+
     var tiposVeiculo = db.TiposVeiculo.Where(t => t.Requisicao == req.Requisicao).ToList();
 
     req.TiposVeiculo = tiposVeiculo;
