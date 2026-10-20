@@ -9,6 +9,8 @@ public class InsercaoTests
     // Vértices numa reta: custo (min) = |a - b|. Caminhada idem (índice 0).
     private static float Custo(int a, int b) => Math.Abs(a - b);
     private static float CustoV(Viagens _, int a, int b) => Custo(a, b);
+    // 0009: km da guarda de reordenação (metros) nos testes de revisita = mesma reta × 1000.
+    private static float Metros(int a, int b) => 1000f * Custo(a, b);
 
     // Turnos.Id 100/101 = código 1 (manhã) das escolas 10/20; Id 200 = código 2 (tarde) da escola 10.
     private static readonly Dictionary<int, short> TurnoPorId = Insercao.MapaTurnoPorId(new[]
@@ -183,7 +185,7 @@ public class InsercaoTests
         var meio = Aluno(2, 20);
         var v = Viagem(1, 1, 1, Aluno(1, 20), meio, Aluno(3, 20), Escola(10, 100));
         meio.Vertice = 10;
-        Assert.True(Insercao.ReposicionaParada(v, meio, 10, Custo));
+        Assert.True(Insercao.ReposicionaParada(v, meio, 10, Custo, distancia: Metros));
         var vs = v.Paradas.Select(p => p.Vertice).ToList();
         Assert.Equal(new[] { 20, 20, 10, 100 }, vs);
         var blocos = 1 + vs.Zip(vs.Skip(1)).Count(t => t.First != t.Second);
@@ -195,7 +197,7 @@ public class InsercaoTests
     {
         var p = Aluno(2, 30);
         var v = Viagem(1, 1, 1, Aluno(1, 10), p, Aluno(3, 50), Escola(10, 100));
-        Assert.False(Insercao.ReposicionaParada(v, p, 10, Custo));
+        Assert.False(Insercao.ReposicionaParada(v, p, 10, Custo, distancia: Metros));
         Assert.Equal(new[] { 10, 30, 50, 100 }, v.Paradas.Select(x => x.Vertice).ToArray());
     }
 
@@ -211,7 +213,7 @@ public class InsercaoTests
         var v = Viagem(93, 1, 1, Aluno(1, 10), Aluno(2, 30), Aluno(3, 30), Aluno(4, 35), Aluno(5, 30), Aluno(6, 30),
                        Aluno(7, 50), Escola(10, 100));
         Assert.Equal(1, Revisitas(v));
-        var n = Insercao.AgrupaVerticesIguais(v, _ => 10, Custo);
+        var n = Insercao.AgrupaVerticesIguais(v, _ => 10, Custo, distancia: Metros);
         Assert.Equal(1, n);
         Assert.Equal(0, Revisitas(v));
         Assert.Equal(8, v.Paradas.Count); // ninguém some
@@ -223,7 +225,7 @@ public class InsercaoTests
     {
         var v = Viagem(94, 2, 1, Escola(10, 0), Aluno(1, 50), Aluno(2, 30), Aluno(3, 35), Aluno(4, 30), Aluno(5, 10));
         var antes = Insercao.Duracao(v.Paradas.Select(p => p.Vertice).ToList(), Custo);
-        Insercao.AgrupaVerticesIguais(v, _ => 10, Custo);
+        Insercao.AgrupaVerticesIguais(v, _ => 10, Custo, distancia: Metros);
         var depois = Insercao.Duracao(v.Paradas.Select(p => p.Vertice).ToList(), Custo);
         Assert.Equal(0, Revisitas(v));
         Assert.True(depois <= antes);
@@ -270,7 +272,7 @@ public class InsercaoTests
         var v = Viagem(167, 1, 2, Aluno(1, 6524), Aluno(2, 6615), Aluno(3, 6615), Aluno(4, 6788), Aluno(5, 6615),
                        Aluno(6, 6788), Aluno(7, 6615), Aluno(8, 6615), Aluno(9, 6429), Escola(10, 7000));
         Assert.Equal(3, Revisitas(v));
-        Insercao.AgrupaVerticesIguais(v, _ => 10, custo);
+        Insercao.AgrupaVerticesIguais(v, _ => 10, custo, distancia: (a, b) => 1000f * custo(a, b));
         Assert.Equal(0, Revisitas(v));
         Assert.Equal(10, v.Paradas.Count);
         Assert.Equal(2, v.Paradas.Count(p => p.Vertice == 6788));
@@ -285,13 +287,13 @@ public class InsercaoTests
         // O vértice 40 tem uma escola (não se move); levar A para lá o poria depois da escola 10.
         var v = Viagem(1, 1, 1, Aluno(1, 40), Escola(10, 50), Aluno(2, 60), Escola(20, 40));
         int? esc(int seq) => seq == 1 ? 10 : 20;
-        Assert.Equal(0, Insercao.AgrupaVerticesIguais(v, esc, Custo));
+        Assert.Equal(0, Insercao.AgrupaVerticesIguais(v, esc, Custo, distancia: Metros));
         Assert.Equal(new[] { 40, 50, 60, 40 }, v.Paradas.Select(p => p.Vertice).ToArray());
 
         // Já o caso "aluno de outra escola embarca antes" é factível e junta:
         var w = Viagem(2, 1, 1, Aluno(1, 30), Escola(20, 40), Aluno(2, 30), Escola(10, 100));
         int? esc2(int seq) => seq == 1 ? 20 : 10;
-        Assert.Equal(1, Insercao.AgrupaVerticesIguais(w, esc2, Custo));
+        Assert.Equal(1, Insercao.AgrupaVerticesIguais(w, esc2, Custo, distancia: Metros));
         Assert.Equal(new[] { 30, 30, 40, 100 }, w.Paradas.Select(p => p.Vertice).ToArray());
     }
 
@@ -300,7 +302,7 @@ public class InsercaoTests
     {
         // Volta: escola 10 em 0, aluno em 0 lá na frente → junta ao bloco da escola (depois dela).
         var v = Viagem(2, 2, 1, Escola(10, 0), Aluno(1, 20), Aluno(2, 0), Aluno(3, 40));
-        Assert.Equal(1, Insercao.AgrupaVerticesIguais(v, _ => 10, Custo));
+        Assert.Equal(1, Insercao.AgrupaVerticesIguais(v, _ => 10, Custo, distancia: Metros));
         Assert.Equal(new[] { 0, 0, 20, 40 }, v.Paradas.Select(p => p.Vertice).ToArray());
         Assert.Equal(2, TipoParada(v, 0));
     }
@@ -333,11 +335,11 @@ public class InsercaoTests
         Assert.Equal(0, Revisitas(v));
         Assert.True(Dur(v, Custo) <= 95);
 
-        // Dentro do limite também aceita piorar, desde que fique <= TempoMaximo (17 → 36, limite 40).
+        // 0009: dentro do limite NÃO aceita mais piorar o tempo (17 → 36 com limite 40): mantém a ordem.
         var t = ViagemTorta();
-        Assert.Equal(1, Insercao.AgrupaVerticesIguais(t, _ => 10, CustoTorto, tempoMaximo: 40));
-        Assert.Equal(0, Revisitas(t));
-        Assert.Equal(36f, Dur(t, CustoTorto));
+        Assert.Equal(0, Insercao.AgrupaVerticesIguais(t, _ => 10, CustoTorto, tempoMaximo: 40));
+        Assert.Equal(1, Revisitas(t));
+        Assert.Equal(17f, Dur(t, CustoTorto));
     }
 
     [Fact]
@@ -385,6 +387,14 @@ public class InsercaoTests
         (6524, 6615) => 9.306362f, (6524, 6788) => 10.6192f, (6615, 6788) => 1.3128372f,
         _ => float.PositiveInfinity
     };
+    // 0009: distancias_req.distancia (m) da 167 (diag4 F2). 6615<->6788 não está na matriz; o fallback
+    // físico não foi medido — usa-se o limite inferior pela triangular (7079,5 − 6204,2 = 8042,6 − 7167,3 = 875,2 m).
+    private static float Metros167(int a, int b) => (Math.Min(a, b), Math.Max(a, b)) switch
+    {
+        (6429, 6524) => 14246.809f, (6429, 6615) => 8042.5664f, (6429, 6788) => 7167.342f,
+        (6524, 6615) => 6204.2417f, (6524, 6788) => 7079.467f, (6615, 6788) => 875.2253f,
+        _ => float.PositiveInfinity
+    };
 
     [Fact]
     public void Real167_TrocaInLocoNoMeioDoGrupo_ReposicionaSemRevisita()
@@ -400,7 +410,7 @@ public class InsercaoTests
         {
             var p = v.Paradas.Single(x => x.Codigo == codigo);
             p.Vertice = 6788;
-            Insercao.ReposicionaParada(v, p, 10, Custo167, tempoMaximo: 120);
+            Insercao.ReposicionaParada(v, p, 10, Custo167, tempoMaximo: 120, distancia: Metros167);
         }
 
         Assert.Equal(0, Revisitas(v));                          // na v1 real foram 3 (6615 em 3 blocos, 6788 em 2)
@@ -417,7 +427,7 @@ public class InsercaoTests
                        Aluno(9, 6429), Escola(10, 6429));
         var antes = Dur(v, Custo167);
         Assert.Equal(3, Revisitas(v));
-        Insercao.AgrupaVerticesIguais(v, _ => 10, Custo167, tempoMaximo: 120);
+        Insercao.AgrupaVerticesIguais(v, _ => 10, Custo167, tempoMaximo: 120, distancia: Metros167);
         Assert.Equal(0, Revisitas(v));
         Assert.True(Dur(v, Custo167) < antes);
     }
@@ -457,5 +467,136 @@ public class InsercaoTests
         Assert.Equal(1000, manha.LimiarCaminhada(req));
         Assert.Equal(1000, idTres.LimiarCaminhada(req));
         Assert.Equal(1000, new Alunos { Turno = 132058, TipoEnsino = 4 }.LimiarCaminhada(req)); // sem Horario: sem noturno
+    }
+
+    // ---------------- 0009: reordenação não pode piorar tempo nem km ----------------
+    // Perfil das 119/120 (074cc73 × 1ed6d7d: +1,75 min e +1,16 km, sem aluno novo, dentro do TM 120):
+    // aluno trocado in loco na 1ª parada da ida (posição 0 fica fora de JanelaInsercao, então a
+    // MelhorPosicao não consegue devolvê-lo ao lugar). Valores sintéticos com o mesmo delta real
+    // (as sequências reais de 119/120 dependem do E1 da q_diag5).
+    private static float Min119(int a, int b) => (Math.Min(a, b), Math.Max(a, b)) switch
+    {
+        (7, 10) => 3f, (10, 20) => 10f, (20, 30) => 10f, (7, 20) => 11.75f, (7, 30) => 30f, _ => 99f
+    };
+    private static float M119(int a, int b) => (Math.Min(a, b), Math.Max(a, b)) switch
+    {
+        (7, 10) => 2000f, (10, 20) => 6000f, (20, 30) => 6000f, (7, 20) => 7160f, (7, 30) => 20000f, _ => 99000f
+    };
+    private static Viagens Viagem119(out Paradas trocado)
+    {
+        trocado = Aluno(1, 7);                         // vértice novo da troca in loco, na posição 0
+        return Viagem(119, 1, 1, trocado, Aluno(2, 10), Aluno(3, 20), Escola(10, 30));
+    }
+
+    [Fact]
+    public void Perfil119_ReordenacaoQuePioravaKmDentroDoTM_AgoraRecusada()
+    {
+        var v = Viagem119(out var p);
+        var ordem = v.Paradas.Select(x => x.Vertice).ToArray();
+        Assert.Equal(23f, Dur(v, Min119));
+        // A melhor posição disponível (entre 10 e 20) dá 24,75 min (+1,75) e 15,16 km (+1,16):
+        Assert.True(Insercao.RespeitaTempo(23f, 24.75f, 120));              // a guarda da 0007 aceitava (<= TM)
+        Assert.False(Insercao.NaoPioraReordenacao(23f, 24.75f, 14000f, 15160f));
+
+        Assert.False(Insercao.ReposicionaParada(v, p, 10, Min119, tempoMaximo: 120, distancia: M119));
+        Assert.Equal(ordem, v.Paradas.Select(x => x.Vertice).ToArray());    // ordem mantida
+        Assert.Equal(23f, Dur(v, Min119));
+        Assert.Equal(14000f, Dur(v, M119));
+    }
+
+    // 119/120 REAIS (diag5 E1/E2): o aluno 1927012 trocou in loco 5646 -> 6690 e estava na 1ª parada da ida
+    // (última da volta). Na v1 (074cc73) foi reposicionado para entre 6736 e 6743: +1,739 min e +1.159 m
+    // por sentido (K4: +1,16 km). Tempos (veículo da viagem) e metros da distancias_req.
+    private static readonly Dictionary<(int, int), (float min, float m)> Matriz119 = new()
+    {
+        [(6690, 6736)] = (1.7389524f, 1159f), [(6690, 6743)] = (5.0669765f, 3378f), [(6736, 6743)] = (3.3280241f, 2219f),
+        [(6228, 6743)] = (1.4119087f, 941f), [(6228, 6309)] = (1.5505452f, 1034f), [(6309, 6412)] = (1.02616f, 684f),
+        [(5630, 6412)] = (0.88515997f, 590f), [(5630, 6390)] = (4.0299106f, 2687f), [(5000, 6390)] = (35.514465f, 26556f),
+        [(1537, 5000)] = (12.023805f, 8016f), [(1537, 4207)] = (3.205091f, 2137f), [(4207, 5784)] = (4.9252243f, 3283f),
+        [(622, 5784)] = (4.473878f, 2983f),
+    };
+    private static float Min119Real(int a, int b) => Matriz119.TryGetValue((Math.Min(a, b), Math.Max(a, b)), out var t) ? t.min : float.PositiveInfinity;
+    private static float M119Real(int a, int b) => Matriz119.TryGetValue((Math.Min(a, b), Math.Max(a, b)), out var t) ? t.m : float.PositiveInfinity;
+    private static readonly int[] Ida119 = { 6690, 6736, 6743, 6228, 6309, 6412, 5630, 6390, 5000, 1537, 4207, 5784 };
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void Real119e120_TrocaInLocoNaPontaDaViagem_ReposicionamentoRecusado(short sentido)
+    {
+        var alunos = Ida119.Select((vx, i) => Aluno(i == 0 ? 1927012 : 100 + i, vx)).ToList();
+        var trocado = alunos[0];
+        var paradas = sentido == 1
+            ? alunos.Append(Escola(21982, 622)).ToArray()
+            : new[] { Escola(21982, 622) }.Concat(Enumerable.Reverse(alunos)).ToArray();
+        var v = Viagem((short)(sentido == 1 ? 119 : 120), sentido, 1, paradas);
+        var ordem = v.Paradas.Select(x => x.Vertice).ToArray();
+        var (min, m) = (Dur(v, Min119Real), Dur(v, M119Real));
+
+        // O que a 0007 fazia: entre 6736 e 6743 → +1,739 min e +1.159 m, aceito pela guarda de TM (<= 120).
+        Assert.True(Insercao.RespeitaTempo(min, min + 1.7389524f, 120));
+        Assert.False(Insercao.NaoPioraReordenacao(min, min + 1.7389524f, m, m + 1159f));
+
+        Assert.False(Insercao.ReposicionaParada(v, trocado, 21982, Min119Real, tempoMaximo: 120, distancia: M119Real));
+        Assert.Equal(ordem, v.Paradas.Select(x => x.Vertice).ToArray());    // ordem da troca in loco mantida
+        Assert.Equal(0, Revisitas(v));
+        Assert.Equal(m, Dur(v, M119Real));
+    }
+
+    [Fact]
+    public void Reposiciona_TempoMelhorMasKmPior_Recusada()
+    {
+        // Mesma viagem, mas 7->20 agora é mais rápido (9 min): a nova ordem ganha 1 min e perde 1,16 km.
+        float min(int a, int b) => (Math.Min(a, b), Math.Max(a, b)) == (7, 20) ? 9f : Min119(a, b);
+        var v = Viagem119(out var p);
+        Assert.False(Insercao.ReposicionaParada(v, p, 10, min, tempoMaximo: 120, distancia: M119));
+        Assert.Equal(new[] { 7, 10, 20, 30 }, v.Paradas.Select(x => x.Vertice).ToArray());
+
+        // Sem a função de km (comportamento da 0007 só com tempo) a mesma troca seria aceita.
+        var w = Viagem119(out var q);
+        Assert.True(Insercao.ReposicionaParada(w, q, 10, min, tempoMaximo: 120));
+        Assert.Equal(new[] { 10, 7, 20, 30 }, w.Paradas.Select(x => x.Vertice).ToArray());
+    }
+
+    [Fact]
+    public void Agrupa_TempoMelhorMasKmPior_MantemRevisita()
+    {
+        // 5–6–5–100: juntar os 5 reduz o tempo (com CustoTorto invertido) mas aumenta o km → mantém.
+        float min(int a, int b) => (Math.Min(a, b), Math.Max(a, b)) switch
+        { (0, 5) => 5, (5, 6) => 10, (5, 100) => 10, (6, 100) => 2, (0, 6) => 30, _ => 99 };
+        float m(int a, int b) => (Math.Min(a, b), Math.Max(a, b)) switch
+        { (0, 5) => 5000, (5, 6) => 1000, (5, 100) => 10000, (6, 100) => 30000, (0, 6) => 30000, _ => 99000 };
+        var t = ViagemTorta();                                            // 0,5,6,5,100
+        Assert.Equal(35f, Dur(t, min)); Assert.Equal(17000f, Dur(t, m));
+        // juntando (0,5,5,6,100): 17 min (melhor), 36 km (pior)
+        Assert.Equal(0, Insercao.AgrupaVerticesIguais(t, _ => 10, min, tempoMaximo: 120, distancia: m));
+        Assert.Equal(1, Revisitas(t));
+        Assert.Equal(1, Insercao.AgrupaVerticesIguais(ViagemTorta(), _ => 10, min, tempoMaximo: 120)); // só tempo: juntaria
+    }
+
+    [Fact]
+    public void NaoPioraReordenacao_Regras()
+    {
+        Assert.True(Insercao.NaoPioraReordenacao(10, 10, 5000, 5000));      // empate
+        Assert.True(Insercao.NaoPioraReordenacao(10, 9, 5000, 4000));       // melhora os dois
+        Assert.False(Insercao.NaoPioraReordenacao(10, 10.01f, 5000, 4000)); // piora o tempo
+        Assert.False(Insercao.NaoPioraReordenacao(10, 9, 5000, 5002));      // piora o km (> 1 m)
+        Assert.True(Insercao.NaoPioraReordenacao(10, 9, 5000, 5000.5f));    // dentro da tolerância
+        Assert.False(Insercao.NaoPioraReordenacao(10, float.PositiveInfinity, 5000, 5000));
+        Assert.True(Insercao.NaoPioraReordenacao(10, 9, float.PositiveInfinity, 5000)); // km antes sem caminho
+        Assert.False(Insercao.NaoPioraReordenacao(10, 9, 5000, float.PositiveInfinity));
+    }
+
+    [Fact]
+    public void Real167_ComGuardaDeKm_KmCaiEQuedaDaRevisita()
+    {
+        var v = Viagem(167, 1, 2, Aluno(1, 6524), Aluno(2078027, 6615), Aluno(2078029, 6615), Aluno(1950888, 6788),
+                       Aluno(1995804, 6615), Aluno(2021608, 6788), Aluno(2078100, 6615), Aluno(1908279, 6615),
+                       Aluno(9, 6429), Escola(10, 6429));
+        var kmAntes = Dur(v, Metros167);
+        Insercao.AgrupaVerticesIguais(v, _ => 10, Custo167, tempoMaximo: 120, distancia: Metros167);
+        Assert.Equal(0, Revisitas(v));
+        Assert.True(Dur(v, Metros167) < kmAntes);                       // 17,75 km → 14,25 km
+        Assert.Equal(14246.7f, Dur(v, Metros167), 0);
     }
 }

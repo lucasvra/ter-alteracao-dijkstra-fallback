@@ -469,8 +469,11 @@ static List<Alunos> ModificarAlunos(List<Viagens> viagens, List<(Alunos aluno, b
                 // 0007: a troca in loco mantém a posição antiga; se o novo vértice já existe em outro
                 // ponto da viagem (ou o aluno estava no meio de um grupo no vértice antigo, Y–X–Y),
                 // isso gera revisita. Reposiciona na mesma viagem quando não piora a duração.
+                // 0009: nem o km (índice 0 = distancias_req.distancia em metros; fora da matriz, fallback
+                // Dijkstra com veículo 0 = distância física). A troca in loco em si não muda de critério.
                 if (Insercao.ReposicionaParada(viagem, modificar, aluno.Escola!.Value,
-                        (a, b) => req.Distancias[a, b, viagem.TipoVeiculo], req.TempoMaximo))
+                        (a, b) => req.Distancias[a, b, viagem.TipoVeiculo], req.TempoMaximo,
+                        (a, b) => req.Distancias[a, b, 0]))
                     Log.WriteLine($"\tAluno {aluno.Seq}: parada reposicionada na viagem {viagem.Viagem:000} (evita revisita)");
             }
             else
@@ -560,9 +563,11 @@ static void AtualizaViagensReaproveitadas(List<Viagens> viagens, List<Alunos> al
         // 0007: um bloco por vértice (herdadas inclusive: a v1 renumera e expõe Y–X–Y que viesse da
         // troca in loco, da inserção ou da ordem herdada). Feito antes de renumerar e recalcular tempos.
         // Guarda: só reagrupa se a duração final <= TempoMaximo (ou, se já estourava, se não piorar).
+        // 0009: e só se não piorar tempo nem km (índice 0 da matriz / fallback) em relação à ordem atual.
         var fundidos = Insercao.AgrupaVerticesIguais(viagem,
             seq => alunosPorSeq.TryGetValue(seq, out var al) ? al.Escola : null,
-            (a, b) => req.Distancias[a, b, viagem.TipoVeiculo], req.TempoMaximo);
+            (a, b) => req.Distancias[a, b, viagem.TipoVeiculo], req.TempoMaximo,
+            (a, b) => req.Distancias[a, b, 0]);
         if (fundidos > 0)
             Log.WriteLine($"\tViagem {viagem.Viagem:000}: {fundidos} vértice(s) reagrupado(s) num só bloco");
 

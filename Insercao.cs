@@ -147,14 +147,17 @@ namespace ter_otimizacao
         /// <summary>
         /// 0007: reposiciona uma parada JÁ existente (troca in loco de vértice) na melhor posição da
         /// mesma viagem, respeitando o lado da escola. Guarda de tempo: <see cref="RespeitaTempo"/>.
+        /// 0009: e <see cref="NaoPioraReordenacao"/> — só aceita a nova ordem se a duração E o km
+        /// (distancia = índice 0 da matriz, metros) não piorarem em relação à ordem atual.
         /// Resolve o caso Y–X–Y (aluno do meio de um grupo em Y trocado para X) e X duplicado.
         /// </summary>
         public static bool ReposicionaParada(Viagens viagem, Paradas parada, int escola, Func<int, int, float> custo,
-            float tempoMaximo = float.PositiveInfinity)
+            float tempoMaximo = float.PositiveInfinity, Func<int, int, float>? distancia = null)
         {
             var original = viagem.Paradas.IndexOf(parada);
             if (original < 0) return false;
             var antes = Duracao(viagem.Paradas.Select(p => p.Vertice).ToList(), custo);
+            var kmAntes = distancia == null ? 0f : Duracao(viagem.Paradas.Select(p => p.Vertice).ToList(), distancia);
 
             viagem.Paradas.RemoveAt(original);
             var idxEscola = IndiceEscola(viagem, escola);
@@ -168,10 +171,12 @@ namespace ter_otimizacao
             viagem.Paradas.Insert(pos + 1, parada);
             var depois = Duracao(viagem.Paradas.Select(p => p.Vertice).ToList(), custo);
             if (pos + 1 == original) return false;
-            if (RespeitaTempo(antes, depois, tempoMaximo)) return true;
+            var kmDepois = distancia == null ? 0f : Duracao(viagem.Paradas.Select(p => p.Vertice).ToList(), distancia);
+            if (RespeitaTempo(antes, depois, tempoMaximo) && NaoPioraReordenacao(antes, depois, kmAntes, kmDepois)) return true;
 
             Log.WriteLine($"\tViagem {viagem.Viagem:000}: reposicionamento do vértice {parada.Vertice} recusado " +
-                          $"(duração {antes:0.0} -> {depois:0.0} min, máximo {tempoMaximo})", ConsoleColor.Yellow);
+                          $"(duração {antes:0.0} -> {depois:0.0} min, km {kmAntes / 1000:0.00} -> {kmDepois / 1000:0.00}, " +
+                          $"máximo {tempoMaximo}; reordenação não pode piorar tempo nem km)", ConsoleColor.Yellow);
             viagem.Paradas.Remove(parada);
             viagem.Paradas.Insert(original, parada);
             return false;
@@ -200,7 +205,7 @@ namespace ter_otimizacao
         /// </summary>
         /// <returns>Número de vértices fundidos.</returns>
         public static int AgrupaVerticesIguais(Viagens viagem, Func<int, int?> escolaDoAluno, Func<int, int, float> custo,
-            float tempoMaximo = float.PositiveInfinity)
+            float tempoMaximo = float.PositiveInfinity, Func<int, int, float>? distancia = null)
         {
             var fundidos = 0;
             var impossiveis = new HashSet<int>();
@@ -219,9 +224,11 @@ namespace ter_otimizacao
                 var alvos = fixos.Count == 1 ? fixos : dup.ToList();
 
                 var antes = Duracao(viagem.Paradas.Select(p => p.Vertice).ToList(), custo);
+                var kmAntes = distancia == null ? 0f : Duracao(viagem.Paradas.Select(p => p.Vertice).ToList(), distancia);
                 List<Paradas>? melhor = null;
                 var melhorDur = float.PositiveInfinity;
                 var melhorRecusada = float.PositiveInfinity; // menor duração factível barrada pela guarda (log)
+                var kmRecusada = float.NaN;
                 foreach (var alvo in alvos)
                 {
                     var noAlvo = viagem.Paradas.Skip(alvo.ini).Take(alvo.fim - alvo.ini + 1).ToList();
@@ -233,7 +240,12 @@ namespace ter_otimizacao
                     if (!mover.All(p => LadoDaEscolaOk(lista, p, escolaDoAluno(p.Codigo), volta))) continue;
                     var dur = Duracao(lista.Select(p => p.Vertice).ToList(), custo);
                     if (!float.IsFinite(dur)) continue;
-                    if (!RespeitaTempo(antes, dur, tempoMaximo)) { melhorRecusada = Math.Min(melhorRecusada, dur); continue; }
+                    var km = distancia == null ? 0f : Duracao(lista.Select(p => p.Vertice).ToList(), distancia);
+                    if (!RespeitaTempo(antes, dur, tempoMaximo) || !NaoPioraReordenacao(antes, dur, kmAntes, km))
+                    {
+                        if (dur < melhorRecusada) { melhorRecusada = dur; kmRecusada = km; }
+                        continue;
+                    }
                     if (dur < melhorDur - EpsilonDesvio) { melhorDur = dur; melhor = lista; }
                 }
 
@@ -241,7 +253,8 @@ namespace ter_otimizacao
                 {
                     if (float.IsFinite(melhorRecusada))
                         Log.WriteLine($"\tViagem {viagem.Viagem:000}: vértice {v} não reagrupado — duração {antes:0.0} -> {melhorRecusada:0.0} min, " +
-                                      $"máximo {tempoMaximo}{(antes > tempoMaximo ? " (já estourava; só reagrupa se não piorar)" : "")}", ConsoleColor.Yellow);
+                                      $"km {kmAntes / 1000:0.00} -> {kmRecusada / 1000:0.00}, máximo {tempoMaximo} " +
+                                      "(reordenação não pode piorar tempo nem km)", ConsoleColor.Yellow);
                     impossiveis.Add(v);
                     continue;
                 }
@@ -265,6 +278,22 @@ namespace ter_otimizacao
             if (!float.IsFinite(depois)) return false;
             if (float.IsFinite(antes) && antes > tempoMaximo + EpsilonDesvio) return depois <= antes + EpsilonDesvio;
             return depois <= tempoMaximo + EpsilonDesvio;
+        }
+
+        public const float EpsilonMetros = 1f;
+
+        /// <summary>
+        /// 0009: guarda de reordenação pura (reposicionamento após a troca in loco e AgrupaVerticesIguais).
+        /// Manter a ordem atual é sempre viável, então a nova ordem só é aceita se a duração (min) E o
+        /// km (metros, índice 0 da matriz / fallback) forem &lt;= os atuais (± eps). Complementa
+        /// <see cref="RespeitaTempo"/> (TempoMaximo). km infinito antes (par sem caminho) não bloqueia.
+        /// </summary>
+        public static bool NaoPioraReordenacao(float minAntes, float minDepois, float mAntes, float mDepois)
+        {
+            if (!float.IsFinite(minDepois)) return false;
+            if (float.IsFinite(minAntes) && minDepois > minAntes + EpsilonDesvio) return false;
+            if (!float.IsFinite(mAntes)) return true;
+            return float.IsFinite(mDepois) && mDepois <= mAntes + EpsilonMetros;
         }
 
         /// <summary>Blocos de paradas consecutivas no mesmo vértice (índices inclusivos).</summary>
